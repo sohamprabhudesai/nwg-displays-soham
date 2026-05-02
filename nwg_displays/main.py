@@ -666,7 +666,7 @@ def on_toggle_button(btn):
 
 
 def create_display_buttons():
-    global display_buttons
+    global display_buttons, outputs
     for item in display_buttons:
         item.destroy()
     display_buttons = []
@@ -1205,6 +1205,7 @@ def main():
             eprint("niri config directory not found!")
             outputs_path = ""
 
+    global num_ws
     num_ws = args.num_ws
     if sway:
         print("[Info] Number of workspaces: {}".format(num_ws))
