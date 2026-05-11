@@ -182,7 +182,7 @@ def list_outputs():
                     "transform": transforms.get(logical.get("transform", "Normal"), "normal"),
                     "scale": float(logical.get("scale", 1.0)),
                     "scale_filter": "linear",
-                    "refresh": round(float(current_mode.get("refresh_rate", 60000)) / 1000, 2),
+                    "refresh": float(current_mode.get("refresh_rate", 60000)) / 1000,
                     "modes": [],
                     "focused": mon.get("is_focused", False),
                     "adaptive_sync_status": "enabled" if mon.get("vrr_enabled", False) else "disabled",
