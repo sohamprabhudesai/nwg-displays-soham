@@ -474,9 +474,9 @@ class SettingsApplier:
             lua_table = ",\n".join(lua_props)
             lines_lua.append(f"hl.monitor({{\n{lua_table}\n}})")
 
-        backup = []
+        backup_conf = []
         if os.path.isfile(outputs_path):
-            backup = load_text_file(outputs_path).splitlines()
+            backup_conf = load_text_file(outputs_path).splitlines()
 
         outputs_path_lua = (
             outputs_path.removesuffix(".conf") + ".lua"
@@ -484,10 +484,16 @@ class SettingsApplier:
             else "~/.config/hypr/monitors.lua"
         )
 
+        backup_lua = []
+        if os.path.isfile(outputs_path_lua):
+            backup_lua = load_text_file(outputs_path_lua).splitlines()
+
         save_list_to_text_file(lines_conf, outputs_path)
         save_list_to_text_file(lines_lua, outputs_path_lua)
 
         hyprctl("reload")
+
+        backup = (backup_conf, backup_lua)
 
         if create_confirm_win_callback:
             create_confirm_win_callback(backup, outputs_path, config_dir, profile_name)

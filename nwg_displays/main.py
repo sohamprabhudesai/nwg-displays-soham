@@ -1032,7 +1032,14 @@ def restore_old_settings(btn, backup, path):
         create_display_buttons()
 
     elif os.getenv("HYPRLAND_INSTANCE_SIGNATURE"):
-        save_list_to_text_file(backup, path)
+        # For Hyprland: backup is a tuple (lines_conf, lines_lua), restore both
+        if isinstance(backup, tuple):
+            lua_path = path.removesuffix(".conf") + ".lua" if path.endswith(".conf") else "~/.config/hypr/monitors.lua"
+            save_list_to_text_file(backup[0], path)
+            if backup[1]:
+                save_list_to_text_file(backup[1], lua_path)
+        else:
+            save_list_to_text_file(backup, path)
         confirm_win.close()
         # Don't execute any command here, just save the file and wait for Hyprland to notice and apply the change.
         # Let's give it some time to do it before refreshing UI.
