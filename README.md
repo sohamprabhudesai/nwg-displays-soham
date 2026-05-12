@@ -94,6 +94,11 @@ Instead of configuring as described in Wiki, insert this line:
 source = ~/.config/hypr/monitors.conf
 ```
 
+For version 0.55 and greater (using Lua), insert this line:
+```lua
+require("monitors")
+```
+
 [Default workspace](http://wiki.hyprland.org/Configuring/Monitors/#default-workspace) and [Binding workspaces to a monitor](https://wiki.hyprland.org/Configuring/Monitors/#binding-workspaces-to-a-monitor):
 
 Insert:
@@ -102,7 +107,12 @@ Insert:
 source = ~/.config/hypr/workspaces.conf
 ```
 
-Do not set `disable_autoreload true` in Hyprland settings, or you'll have to reload Hyprland manually after applying chages.
+For version 0.55 and greater, insert:
+```lua
+require("workspaces")
+```
+
+Do not set `disable_autoreload true` in Hyprland settings, or you'll have to reload Hyprland manually after applying changes.
 
 ### Niri
 
