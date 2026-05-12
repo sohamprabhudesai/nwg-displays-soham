@@ -934,7 +934,7 @@ def on_workspaces_apply_btn_hypr(w, win, old_workspaces):
 
             conf_file.write(conf_line + "\n")
 
-            lua_block = "hl.workspace({\n" + ",\n".join(lua_props) + "\n})\n"
+            lua_block = "hl.workspace_rule({\n" + ",\n".join(lua_props) + "\n})\n"
             lua_file.write(lua_block)
 
         conf_file.close()
