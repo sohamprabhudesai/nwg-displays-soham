@@ -57,7 +57,10 @@ class SettingsApplier:
         }
 
         print(f"[Profile] Applying {len(displays)} displays for Hyprland...")
-        lines = [SettingsApplier._get_header("Profile Loader")]
+
+        header = SettingsApplier._get_header("Profile Loader")
+        lines_conf = [header]
+        lines_lua = [header.replace("#", "--")]
 
         for d in displays:
             if not use_desc:
@@ -66,37 +69,61 @@ class SettingsApplier:
                 desc_safe = d["description"].replace("#", "##")
                 name = f"desc:{desc_safe}"
 
+            lua_props = [f'    output = "{name}"']
+
             if not d["active"]:
-                lines.append(f"monitor={name},disable")
+                lines_conf.append(f"monitor={name},disable")
+                lua_props.append("    disabled = true")
                 hyprctl(f"dispatch dpms off {d['name']}")
-                continue
+            else:
+                conf_line = "monitor={},{}x{}@{},{}x{},{}".format(
+                    name,
+                    d["physical_width"],
+                    d["physical_height"],
+                    d["refresh"],
+                    d["x"],
+                    d["y"],
+                    d["scale"],
+                )
 
-            line = "monitor={},{}x{}@{},{}x{},{}".format(
-                name,
-                d["physical_width"],
-                d["physical_height"],
-                d["refresh"],
-                d["x"],
-                d["y"],
-                d["scale"],
-            )
+                mode = f"{d['physical_width']}x{d['physical_height']}@{d['refresh']}"
+                pos = f"{d['x']}x{d['y']}"
+                lua_props.extend([
+                    f'    mode = "{mode}"',
+                    f'    position = "{pos}"',
+                    f'    scale = {d["scale"]}',
+                ])
 
-            if d.get("mirror"):
-                line += ",mirror,{}".format(d["mirror"])
+                if d.get("mirror"):
+                    conf_line += f",mirror,{d['mirror']}"
+                    lua_props.append(f'    mirror = "{d["mirror"]}"')
 
-            if d.get("ten_bit"):
-                line += ",bitdepth,10"
+                if d.get("ten_bit"):
+                    conf_line += ",bitdepth,10"
+                    lua_props.append("    bitdepth = 10")
 
-            lines.append(line)
+                lines_conf.append(conf_line)
 
-            if d["transform"] != "normal":
-                t_code = transforms.get(d["transform"], 0)
-                lines.append(f"monitor={name},transform,{t_code}")
+                if d["transform"] != "normal":
+                    t_code = transforms.get(d["transform"], 0)
+                    lines_conf.append(f"monitor={name},transform,{t_code}")
+                    lua_props.append(f"    transform = {t_code}")
 
-            cmd = "on" if d["dpms"] else "off"
-            hyprctl(f"dispatch dpms {cmd} {d['name']}")
+                cmd = "on" if d["dpms"] else "off"
+                hyprctl(f"dispatch dpms {cmd} {d['name']}")
 
-        save_list_to_text_file(lines, outputs_path)
+            lua_table = ",\n".join(lua_props)
+            lines_lua.append(f"hl.monitor({{\n{lua_table}\n}})")
+
+        outputs_path_lua = (
+            outputs_path.removesuffix(".conf") + ".lua"
+            if outputs_path.endswith(".conf")
+            else "~/.config/hypr/monitors.lua"
+        )
+
+        save_list_to_text_file(lines_conf, outputs_path)
+        save_list_to_text_file(lines_lua, outputs_path_lua)
+
         hyprctl("reload")
 
         config, config_file = get_config()
@@ -397,7 +424,10 @@ class SettingsApplier:
             "flipped-180": 6,
             "flipped-270": 7,
         }
-        lines = [SettingsApplier._get_header()]
+
+        header = SettingsApplier._get_header()
+        lines_conf = [header]
+        lines_lua = [header.replace("#", "--")]
 
         for db in display_buttons:
             name = (
@@ -406,40 +436,64 @@ class SettingsApplier:
                 else "desc:{}".format(db.description.replace("#", "##"))
             )
 
+            lua_props = [f'    output = "{name}"']
+
             if db.name in outputs_activity and not outputs_activity[db.name]:
-                lines.append("monitor={},disable".format(name))
+                lines_conf.append(f"monitor={name},disable")
+                lua_props.append("    disabled = true")
                 hyprctl(f"dispatch dpms off {db.name}")
-                continue
+            else:
+                conf_line = f"monitor={name},{db.physical_width}x{db.physical_height}@{db.refresh},{db.x}x{db.y},{db.scale}"
 
-            # Format: monitor=name,resolution@refresh,position,scale
-            line = "monitor={},{}x{}@{},{}x{},{}".format(
-                name,
-                db.physical_width,
-                db.physical_height,
-                db.refresh,
-                db.x,
-                db.y,
-                db.scale,
-            )
-            if db.mirror:
-                line += ",mirror,{}".format(db.mirror)
-            if db.ten_bit:
-                line += ",bitdepth,10"
+                mode = f"{db.physical_width}x{db.physical_height}@{db.refresh}"
+                pos = f"{db.x}x{db.y}"
+                lua_props.extend([
+                    f'    mode = "{mode}"',
+                    f'    position = "{pos}"',
+                    f"    scale = {db.scale}",
+                ])
 
-            lines.append(line)
-            if db.transform != "normal":
-                lines.append(
-                    "monitor={},transform,{}".format(name, transforms[db.transform])
-                )
+                if db.mirror:
+                    conf_line += f",mirror,{db.mirror}"
+                    lua_props.append(f'    mirror = "{db.mirror}"')
 
-            cmd = "on" if db.dpms else "off"
-            hyprctl(f"dispatch dpms {cmd} {db.name}")
+                if db.ten_bit:
+                    conf_line += ",bitdepth,10"
+                    lua_props.append("    bitdepth = 10")
 
-        backup = []
+                lines_conf.append(conf_line)
+
+                if db.transform != "normal":
+                    t_code = transforms.get(db.transform, 0)
+                    lines_conf.append(f"monitor={name},transform,{t_code}")
+                    lua_props.append(f"    transform = {t_code}")
+
+                cmd = "on" if db.dpms else "off"
+                hyprctl(f"dispatch dpms {cmd} {db.name}")
+
+            lua_table = ",\n".join(lua_props)
+            lines_lua.append(f"hl.monitor({{\n{lua_table}\n}})")
+
+        backup_conf = []
         if os.path.isfile(outputs_path):
-            backup = load_text_file(outputs_path).splitlines()
-        save_list_to_text_file(lines, outputs_path)
+            backup_conf = load_text_file(outputs_path).splitlines()
+
+        outputs_path_lua = (
+            outputs_path.removesuffix(".conf") + ".lua"
+            if outputs_path.endswith(".conf")
+            else "~/.config/hypr/monitors.lua"
+        )
+
+        backup_lua = []
+        if os.path.isfile(outputs_path_lua):
+            backup_lua = load_text_file(outputs_path_lua).splitlines()
+
+        save_list_to_text_file(lines_conf, outputs_path)
+        save_list_to_text_file(lines_lua, outputs_path_lua)
+
         hyprctl("reload")
+
+        backup = (backup_conf, backup_lua)
 
         if create_confirm_win_callback:
             create_confirm_win_callback(backup, outputs_path, config_dir, profile_name)
