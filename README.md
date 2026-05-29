@@ -86,7 +86,7 @@ Use `--num_ws` if you use workspaces in a number other than 8.
 
 ### Hyprland
 
-[Monitors](https://wiki.hyprland.org/Configuring/Monitors):
+[Monitors](https://wiki.hyprland.org/0.54.0/Configuring/Monitors):
 
 Instead of configuring as described in Wiki, insert this line:
 
@@ -99,7 +99,7 @@ For version 0.55 and greater (using Lua), insert this line:
 require("monitors")
 ```
 
-[Default workspace](http://wiki.hyprland.org/Configuring/Monitors/#default-workspace) and [Binding workspaces to a monitor](https://wiki.hyprland.org/Configuring/Monitors/#binding-workspaces-to-a-monitor):
+[Default workspace](http://wiki.hyprland.org/0.54.0/Configuring/Monitors/#default-workspace) and [Binding workspaces to a monitor](https://wiki.hyprland.org/0.54.0/Configuring/Monitors/#binding-workspaces-to-a-monitor):
 
 Insert:
 
