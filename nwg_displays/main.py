@@ -14,31 +14,39 @@ Thank you, Kurt Jacobson!
 """
 
 import argparse
-import os.path
+import shutil
+import stat
 import sys
-
+import threading
 import gi
+from nwg_displays.settings_applier import SettingsApplier
+from nwg_displays.wallpaper_manager import WallpaperManager
 
-gi.require_version('Gtk', '3.0')
+
+gi.require_version("Gtk", "3.0")
 try:
-    gi.require_version('GtkLayerShell', '0.1')
+    gi.require_version("GtkLayerShell", "0.1")
 except ValueError:
-    raise RuntimeError('\n\n' +
-                       'If you haven\'t installed GTK Layer Shell, you need to point Python to the\n' +
-                       'library by setting GI_TYPELIB_PATH and LD_LIBRARY_PATH to <build-dir>/src/.\n' +
-                       'For example you might need to run:\n\n' +
-                       'GI_TYPELIB_PATH=build/src LD_LIBRARY_PATH=build/src python3 ' + ' '.join(sys.argv))
+    raise RuntimeError(
+        "\n\n"
+        + "If you haven't installed GTK Layer Shell, you need to point Python to the\n"
+        + "library by setting GI_TYPELIB_PATH and LD_LIBRARY_PATH to <build-dir>/src/.\n"
+        + "For example you might need to run:\n\n"
+        + "GI_TYPELIB_PATH=build/src LD_LIBRARY_PATH=build/src python3 "
+        + " ".join(sys.argv)
+    )
 
 from gi.repository import Gtk, GLib, GtkLayerShell
 
 from nwg_displays.tools import *
-from nwg_displays.tools import is_daemon_running, start_daemon, stop_daemon, create_autostart_entry, remove_autostart_entry
 
+from nwg_displays.profiles import ProfileManager
 from nwg_displays.__about__ import __version__
 
 dir_name = os.path.dirname(__file__)
 sway = os.getenv("SWAYSOCK") is not None
 hypr = os.getenv("HYPRLAND_INSTANCE_SIGNATURE") is not None
+niri = os.getenv("NIRI_SOCKET") is not None
 
 config_dir = os.path.join(get_config_home(), "nwg-displays")
 # This was done by mistake, and the config file need to be migrated to the proper path
@@ -46,12 +54,28 @@ old_config_dir = os.path.join(get_config_home(), "nwg-outputs")
 
 sway_config_dir = os.path.join(get_config_home(), "sway")
 if sway and not os.path.isdir(sway_config_dir):
-    print("WARNING: Couldn't find sway config directory '{}'".format(sway_config_dir), file=sys.stderr)
+    print(
+        "[Warning] Couldn't find sway config directory '{}'".format(sway_config_dir),
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 hypr_config_dir = os.path.join(get_config_home(), "hypr")
 if hypr and not os.path.isdir(hypr_config_dir):
-    print("WARNING: Couldn't find Hyprland config directory '{}'".format(hypr_config_dir), file=sys.stderr)
+    print(
+        "[Warning] Couldn't find Hyprland config directory '{}'".format(
+            hypr_config_dir
+        ),
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+niri_config_dir = os.path.join(get_config_home(), "niri")
+if niri and not os.path.isdir(niri_config_dir):
+    print(
+        "[Warning] Couldn't find niri config directory '{}'".format(niri_config_dir),
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 # Create empty files if not found
@@ -61,8 +85,11 @@ if sway:
 elif hypr:
     for name in ["monitors.conf", "workspaces.conf"]:
         create_empty_file(os.path.join(hypr_config_dir, name))
+elif niri:
+    for name in ["monitor.kdl"]:
+        create_empty_file(os.path.join(niri_config_dir, name))
 else:
-    eprint("Neither sway nor Hyprland detected, terminating")
+    eprint("[Error] Neither sway, Hyprland nor niri detected, terminating")
     sys.exit(1)
 
 config = {}
@@ -74,12 +101,15 @@ i3.get_outputs() does not return some output attributes, especially when connect
 i3.get_tree() on the other hand does not return inactive outputs. So we'll list attributes with .get_tree(),
 and the add inactive outputs, if any, from what we detect with .get_outputs()
 """
-outputs = {}  # Active outputs, listed from the sway tree; stores name and all attributes.
+outputs = (
+    {}
+)  # Active outputs, listed from the sway tree; stores name and all attributes.
 outputs_activity = {}  # Just a dictionary "name": is_active - from get_outputs()
 workspaces = {}  # "workspace_num": "display_name"
 
 display_buttons = []
 selected_output_button = None
+profile_manager = None
 
 # Glade form fields
 form_name = None
@@ -105,6 +135,7 @@ form_apply = None
 form_version = None
 form_mirror = None
 form_ten_bit = None
+form_profile_wallpapers = None
 
 dialog_win = None
 confirm_win = None
@@ -151,7 +182,11 @@ def load_vocabulary():
     if lang is None:
         lang = "en_US"
     else:
-        lang = lang.split(".")[0] if not shell_data["interface-locale"] else shell_data["interface-locale"]
+        lang = (
+            lang.split(".")[0]
+            if not shell_data["interface-locale"]
+            else shell_data["interface-locale"]
+        )
 
     # translate if translation available
     if lang != "en_US":
@@ -188,8 +223,12 @@ def on_button_press_event(widget, event):
         # note that we're rounding down now so that these max values don't get
         # rounded upward later and push the widget off the edge of its parent.
         global max_x, max_y
-        max_x = round_down_to_multiple(p.get_allocation().width - widget.get_allocation().width, SENSITIVITY)
-        max_y = round_down_to_multiple(p.get_allocation().height - widget.get_allocation().height, SENSITIVITY)
+        max_x = round_down_to_multiple(
+            p.get_allocation().width - widget.get_allocation().width, SENSITIVITY
+        )
+        max_y = round_down_to_multiple(
+            p.get_allocation().height - widget.get_allocation().height, SENSITIVITY
+        )
 
         update_form_from_widget(widget)
 
@@ -200,7 +239,6 @@ def on_motion_notify_event(widget, event):
     # px,py stores previous values of x,y
 
     global px, py
-    global offset_x, offset_y
 
     # get starting values for x,y
     x = event.x_root - offset_x
@@ -215,6 +253,7 @@ def on_motion_notify_event(widget, event):
         px = x
         py = y
         snap_x, snap_y = [0], [0]
+        # Collect snap lines from other displays
         for db in display_buttons:
             if db.name == widget.name:
                 continue
@@ -236,6 +275,7 @@ def on_motion_notify_event(widget, event):
                 snap_y.append(val)
 
         snap_h, snap_v = None, None
+        # Find nearest horizontal snap line
         for value in snap_x:
             if abs(x - value) < snap_threshold_scaled:
                 snap_h = value
@@ -247,6 +287,7 @@ def on_motion_notify_event(widget, event):
                 snap_h = value - w
                 break
 
+        # Find nearest vertical snap line
         for value in snap_y:
             if abs(y - value) < snap_threshold_scaled:
                 snap_v = value
@@ -298,7 +339,11 @@ def update_form_from_widget(widget):
     form_dpms.set_active(widget.dpms)
     form_adaptive_sync.set_active(widget.adaptive_sync)
     form_custom_mode.set_active(widget.custom_mode)
-    form_view_scale.set_value(config["view-scale"])  # not really from the widget, but from the global value
+    form_view_scale.set_value(
+        config["view-scale"]
+    )  # not really from the widget, but from the global value
+    if form_profile_wallpapers:
+        form_profile_wallpapers.set_active(config.get("profile-bound-wallpapers", True))
     form_use_desc.set_active(config["use-desc"])
     form_x.set_value(widget.x)
     form_y.set_value(widget.y)
@@ -324,13 +369,21 @@ def update_form_from_widget(widget):
     form_modes.remove_all()
     active = ""
     for mode in widget.modes:
-        m = "{}x{}@{}Hz".format(mode["width"], mode["height"], mode["refresh"] / 1000, mode[
-            "refresh"] / 1000, widget.refresh)
+        m = "{}x{}@{}Hz".format(
+            mode["width"],
+            mode["height"],
+            mode["refresh"] / 1000,
+            mode["refresh"] / 1000,
+            widget.refresh,
+        )
         form_modes.append(m, m)
         # This is just to set active_id
 
-        if mode["width"] == widget.physical_width and mode["height"] == widget.physical_height and mode[
-            "refresh"] / 1000 == widget.refresh:
+        if (
+            mode["width"] == widget.physical_width
+            and mode["height"] == widget.physical_height
+            and mode["refresh"] / 1000 == widget.refresh
+        ):
             active = m
     if active:
         form_modes.set_active_id(active)
@@ -341,9 +394,28 @@ def update_form_from_widget(widget):
 
 
 class DisplayButton(Gtk.Button):
-    def __init__(self, name, description, x, y, physical_width, physical_height, transform, scale, scale_filter,
-                 refresh, modes, active, dpms, adaptive_sync_status, ten_bit, custom_mode_status, focused, monitor,
-                 mirror=""):
+    def __init__(
+        self,
+        name,
+        description,
+        x,
+        y,
+        physical_width,
+        physical_height,
+        transform,
+        scale,
+        scale_filter,
+        refresh,
+        modes,
+        active,
+        dpms,
+        adaptive_sync_status,
+        ten_bit,
+        custom_mode_status,
+        focused,
+        monitor,
+        mirror="",
+    ):
         super().__init__()
         # Output properties
         self.name = name
@@ -363,7 +435,9 @@ class DisplayButton(Gtk.Button):
         # self.modes = modes
         self.active = active
         self.dpms = dpms
-        self.adaptive_sync = adaptive_sync_status == "enabled"  # converts "enabled | disabled" to bool
+        self.adaptive_sync = (
+            adaptive_sync_status == "enabled"
+        )  # converts "enabled | disabled" to bool
         self.custom_mode = custom_mode_status
         self.focused = focused
         self.mirror = mirror
@@ -381,8 +455,13 @@ class DisplayButton(Gtk.Button):
         self.rescale_transform()
         self.set_property("name", "output")
 
-        self.indicator = Indicator(monitor, name, round(self.physical_width * config["view-scale"]),
-                                   round(self.physical_height * config["view-scale"]), config["indicator-timeout"])
+        self.indicator = Indicator(
+            monitor,
+            name,
+            round(self.physical_width * config["view-scale"]),
+            round(self.physical_height * config["view-scale"]),
+            config["indicator-timeout"],
+        )
 
         self.show()
 
@@ -407,11 +486,14 @@ class DisplayButton(Gtk.Button):
         selected_output_button = self
 
     def unselect(self):
+        self.selected = False
         self.set_property("name", "output")
 
     def rescale_transform(self):
-        self.set_size_request(round(self.logical_width * config["view-scale"]),
-                              round(self.logical_height * config["view-scale"]))
+        self.set_size_request(
+            round(self.logical_width * config["view-scale"]),
+            round(self.logical_height * config["view-scale"]),
+        )
 
     def on_active_check_button_toggled(self, w):
         self.active = w.get_active()
@@ -434,6 +516,11 @@ def on_view_scale_changed(*args):
         b.rescale_transform()
         fixed.move(b, b.x * config["view-scale"], b.y * config["view-scale"])
 
+    save_json(config, os.path.join(config_dir, "config"))
+
+
+def on_profile_wallpapers_toggled(widget):
+    config["profile-bound-wallpapers"] = widget.get_active()
     save_json(config, os.path.join(config_dir, "config"))
 
 
@@ -479,15 +566,21 @@ def on_custom_mode_toggle(widget):
 def on_pos_x_changed(widget):
     if selected_output_button:
         selected_output_button.x = round(widget.get_value())
-        fixed.move(selected_output_button, selected_output_button.x * config["view-scale"],
-                   selected_output_button.y * config["view-scale"])
+        fixed.move(
+            selected_output_button,
+            selected_output_button.x * config["view-scale"],
+            selected_output_button.y * config["view-scale"],
+        )
 
 
 def on_pos_y_changed(widget):
     if selected_output_button:
         selected_output_button.y = round(widget.get_value())
-        fixed.move(selected_output_button, selected_output_button.x * config["view-scale"],
-                   selected_output_button.y * config["view-scale"])
+        fixed.move(
+            selected_output_button,
+            selected_output_button.x * config["view-scale"],
+            selected_output_button.y * config["view-scale"],
+        )
 
 
 def on_width_changed(widget):
@@ -577,23 +670,36 @@ def on_daemon_toggled(widget):
         remove_autostart_entry()
         eprint("Daemon disabled")
 
-def on_apply_button(widget):
-    global outputs_activity
-    apply_settings(display_buttons, outputs_activity, outputs_path, use_desc=config["use-desc"])
-    # save config file
+def on_apply_button(widget, p_manager=None):
+    if p_manager is None:
+        p_manager = profile_manager
+
+    profile_name = p_manager.current_profile if p_manager else None
+
+    # Remove legacy storage
+    if "active-profile" in config:
+        del config["active-profile"]
+
+    SettingsApplier.apply_from_gui(
+        display_buttons,
+        outputs_activity,
+        outputs_path,
+        config["use-desc"],
+        create_confirm_win,
+        config_dir,
+        profile_name=profile_name,
+    )
+
     save_json(config, os.path.join(config_dir, "config"))
-    # save monitor preferences
     save_monitor_preferences(display_buttons)
 
 
 def on_output_toggled(check_btn, name):
-    global outputs_activity
     outputs_activity[name] = check_btn.get_active()
 
 
 def on_toggle_button(btn):
     i3 = Connection()
-    global outputs_activity
     for key in outputs_activity:
         toggle = "enable" if outputs_activity[key] else "disable"
         cmd = "output {} {}".format(key, toggle)
@@ -604,28 +710,53 @@ def on_toggle_button(btn):
 
 
 def create_display_buttons():
-    global display_buttons
+    global display_buttons, outputs
     for item in display_buttons:
         item.destroy()
     display_buttons = []
 
-    global outputs
     outputs = list_outputs()
+    
+    if not outputs:
+        eprint("[Error] No outputs detected")
+        return
+    
     for key in outputs:
         item = outputs[key]
         custom_mode = key in config["custom-mode"]
-        b = DisplayButton(key, item["description"], item["x"], item["y"], round(item["physical-width"]),
-                          round(item["physical-height"]),
-                          item["transform"], item["scale"], item["scale_filter"], item["refresh"], item["modes"],
-                          item["active"], item["dpms"], item["adaptive_sync_status"], item["ten_bit"], custom_mode,
-                          item["focused"], item["monitor"], mirror=item["mirror"])
+        b = DisplayButton(
+            key,
+            item["description"],
+            item["x"],
+            item["y"],
+            round(item["physical-width"]),
+            round(item["physical-height"]),
+            item["transform"],
+            item["scale"],
+            item["scale_filter"],
+            item["refresh"],
+            item["modes"],
+            item["active"],
+            item["dpms"],
+            item["adaptive_sync_status"],
+            item["ten_bit"],
+            custom_mode,
+            item["focused"],
+            item["monitor"],
+            mirror=item["mirror"],
+        )
 
         display_buttons.append(b)
 
-        fixed.put(b, round(item["x"] * config["view-scale"]), round(item["y"] * config["view-scale"]))
+        fixed.put(
+            b,
+            round(item["x"] * config["view-scale"]),
+            round(item["y"] * config["view-scale"]),
+        )
 
-    display_buttons[0].select()
-    update_form_from_widget(display_buttons[0])
+    if display_buttons:
+        display_buttons[0].select()
+        update_form_from_widget(display_buttons[0])
 
 
 class Indicator(Gtk.Window):
@@ -666,9 +797,10 @@ def handle_keyboard(window, event):
 
 
 def create_workspaces_window(btn):
-    global sway_config_dir
     global workspaces
-    workspaces = load_workspaces(os.path.join(sway_config_dir, "workspaces"), use_desc=config["use-desc"])
+    workspaces = load_workspaces(
+        os.path.join(sway_config_dir, "workspaces"), use_desc=config["use-desc"]
+    )
     old_workspaces = workspaces.copy()
     global dialog_win
     if dialog_win:
@@ -683,8 +815,6 @@ def create_workspaces_window(btn):
     grid.set_column_spacing(12)
     grid.set_row_spacing(12)
     dialog_win.add(grid)
-    global num_ws
-    global outputs
     last_row = 0
     for i in range(num_ws):
         lbl = Gtk.Label()
@@ -709,7 +839,9 @@ def create_workspaces_window(btn):
     btn_apply = Gtk.Button()
     btn_apply.set_label(voc["apply"])
     if sway_config_dir:
-        btn_apply.connect("clicked", on_workspaces_apply_btn, dialog_win, old_workspaces)
+        btn_apply.connect(
+            "clicked", on_workspaces_apply_btn, dialog_win, old_workspaces
+        )
     else:
         btn_apply.set_sensitive(False)
         btn_apply.set_tooltip_text("Config dir not found")
@@ -726,7 +858,8 @@ def create_workspaces_window(btn):
 def create_workspaces_window_hypr(btn):
     global workspaces
     workspaces = load_workspaces_hypr(
-        os.path.join(hypr_config_dir, "workspaces.conf"), num_ws=num_ws)
+        os.path.join(hypr_config_dir, "workspaces.conf"), num_ws=num_ws
+    )
     eprint("WS->Mon:", workspaces)
     old_workspaces = workspaces.copy()
     global dialog_win
@@ -742,12 +875,13 @@ def create_workspaces_window_hypr(btn):
     grid.set_column_spacing(12)
     grid.set_row_spacing(6)
     dialog_win.add(grid)
-    global outputs
     last_row = 0
     for i in range(num_ws):
         lbl = Gtk.Label()
         if config["use-desc"]:
-            lbl.set_markup("Workspace rule: <b>workspace={},monitor:desc:</b>".format(i + 1))
+            lbl.set_markup(
+                "Workspace rule: <b>workspace={},monitor:desc:</b>".format(i + 1)
+            )
         else:
             lbl.set_markup("Workspace rule: <b>workspace={},monitor:</b>".format(i + 1))
         lbl.set_property("halign", Gtk.Align.END)
@@ -773,7 +907,9 @@ def create_workspaces_window_hypr(btn):
     btn_apply = Gtk.Button()
     btn_apply.set_label(voc["apply"])
     if hypr_config_dir:
-        btn_apply.connect("clicked", on_workspaces_apply_btn_hypr, dialog_win, old_workspaces)
+        btn_apply.connect(
+            "clicked", on_workspaces_apply_btn_hypr, dialog_win, old_workspaces
+        )
     else:
         btn_apply.set_sensitive(False)
         btn_apply.set_tooltip_text("Config dir not found")
@@ -788,7 +924,6 @@ def create_workspaces_window_hypr(btn):
 
 
 def on_ws_combo_changed(combo, ws_num):
-    global workspaces
     workspaces[ws_num] = combo.get_active_id()
 
 
@@ -797,160 +932,63 @@ def close_dialog(w, win):
 
 
 def on_workspaces_apply_btn(w, win, old_workspaces):
-    global workspaces
     if workspaces != old_workspaces:
-        save_workspaces(workspaces, os.path.join(sway_config_dir, "workspaces"), use_desc=config["use-desc"])
+        save_workspaces(
+            workspaces,
+            os.path.join(sway_config_dir, "workspaces"),
+            use_desc=config["use-desc"],
+        )
         notify("Workspaces assignment", "Restart sway for changes to take effect")
 
     close_dialog(w, win)
 
 
 def on_workspaces_apply_btn_hypr(w, win, old_workspaces):
-    global workspaces
     if workspaces != old_workspaces:
         workspace_conf_file = workspaces_path
-        text_file = open(workspace_conf_file, "w")
+        workspace_lua_file = (workspace_conf_file.removesuffix(".conf") + ".lua" if workspace_conf_file.endswith(".conf") else "~/.config/hypr/workspaces.lua")
+
+        conf_file = open(workspace_conf_file, "w")
+        lua_file = open(workspace_lua_file, "w")
 
         now = datetime.datetime.now()
-        line = "# Generated by nwg-displays on {} at {}. Do not edit manually.\n".format(
-            datetime.datetime.strftime(now, '%Y-%m-%d'),
-            datetime.datetime.strftime(now, '%H:%M:%S'))
-        text_file.write(line + "\n")
+        timestamp = "Generated by nwg-displays on {} at {}. Do not edit manually.\n".format(
+            datetime.datetime.strftime(now, "%Y-%m-%d"),
+            datetime.datetime.strftime(now, "%H:%M:%S"),
+        )
+
+        conf_file.write(f"# {timestamp}\n")
+        lua_file.write(f"-- {timestamp}\n")
 
         monitors_with_default_workspace = []
-        for ws in workspaces:
-            mon = workspaces[ws]
-            if not config["use-desc"]:
-                line = "workspace={},monitor:{}".format(ws, mon)
-            else:
-                line = "workspace={},monitor:desc:{}".format(ws, mon)
+        for ws, mon in workspaces.items():
+            mon_target = mon if not config["use-desc"] else f"desc:{mon}"
+
+            conf_line = f"workspace={ws},monitor:{mon_target}"
+
+            lua_props = [
+                f'    workspace = "{ws}"',
+                f'    monitor = "{mon_target}"',
+            ]
 
             if mon not in monitors_with_default_workspace:
-                line += ",default:true"
+                conf_line += ",default:true"
+                lua_props.append("    default = true")
                 monitors_with_default_workspace.append(mon)
 
-            text_file.write(line + "\n")
+            conf_file.write(conf_line + "\n")
 
-        text_file.close()
+            lua_block = "hl.workspace_rule({\n" + ",\n".join(lua_props) + "\n})\n"
+            lua_file.write(lua_block)
+
+        conf_file.close()
+        lua_file.close()
         notify("Workspaces assignment", "Restart Hyprland for changes to take effect")
 
     close_dialog(w, win)
 
 
-def apply_settings(display_buttons, outputs_activity, outputs_path, use_desc=False):
-    now = datetime.datetime.now()
-    lines = ["# Generated by nwg-displays on {} at {}. Do not edit manually.\n".format(
-        datetime.datetime.strftime(now, '%Y-%m-%d'),
-        datetime.datetime.strftime(now, '%H:%M:%S'))]
-    cmds = []
-    db_names = []
-    # just active outputs have their buttons
-    if os.getenv("SWAYSOCK"):
-        for db in display_buttons:
-            name = db.name if not use_desc else db.description
-            db_names.append(name)
-
-            lines.append('output "%s" {' % name)
-            cmd = 'output "{}"'.format(name)
-
-            custom_mode_str = "--custom" if db.custom_mode else ""
-            lines.append(
-                "    mode {} {}x{}@{}Hz".format(custom_mode_str, db.physical_width, db.physical_height, db.refresh))
-            cmd += " mode {} {}x{}@{}Hz".format(custom_mode_str, db.physical_width, db.physical_height, db.refresh)
-
-            lines.append("    pos {} {}".format(db.x, db.y))
-            cmd += " pos {} {}".format(db.x, db.y)
-
-            lines.append("    transform {}".format(db.transform))
-            cmd += " transform {}".format(db.transform)
-
-            lines.append("    scale {}".format(db.scale))
-            cmd += " scale {}".format(db.scale)
-
-            lines.append("    scale_filter {}".format(db.scale_filter))
-            cmd += " scale_filter {}".format(db.scale_filter)
-
-            a_s = "on" if db.adaptive_sync else "off"
-            lines.append("    adaptive_sync {}".format(a_s))
-            cmd += " adaptive_sync {}".format(a_s)
-
-            dpms = "on" if db.dpms else "off"
-            lines.append("    dpms {}".format(dpms))
-            cmd += " dpms {}".format(dpms)
-
-            lines.append("}")
-            cmds.append(cmd)
-
-        if not use_desc:
-            for key in outputs_activity:
-                if key not in db_names:
-                    lines.append('output "{}" disable'.format(key))
-                    cmds.append('output "{}" disable'.format(key))
-        else:
-            for key in outputs_activity:
-                desc = inactive_output_description(key)
-                if desc not in db_names:
-                    lines.append('output "{}" disable'.format(desc))
-                    cmds.append('output "{}" disable'.format(desc))
-
-        print("[Saving]")
-        for line in lines:
-            print(line)
-
-        # Check if the outputs file exists
-        if os.path.isfile(outputs_path):
-            # Load a backup to restore settings if needed
-            backup = load_text_file(outputs_path).splitlines()
-        else:
-            backup = []
-
-        save_list_to_text_file(lines, outputs_path)
-
-        print("[Executing]")
-        for cmd in cmds:
-            print(cmd)
-
-        i3 = Connection()
-        for cmd in cmds:
-            i3.command(cmd)
-
-        create_confirm_win(backup, outputs_path)
-
-    elif os.getenv("HYPRLAND_INSTANCE_SIGNATURE"):
-        transforms = {"normal": 0, "90": 1, "180": 2, "270": 3, "flipped": 4, "flipped-90": 5, "flipped-180": 6,
-                      "flipped-270": 7}
-        for db in display_buttons:
-            name = db.name if not use_desc else "desc:{}".format(db.description.replace("#", "##"))
-            db_names.append(name)
-
-            line = "monitor={},{}x{}@{},{}x{},{}".format(name, db.physical_width, db.physical_height, db.refresh, db.x, db.y, db.scale)
-            if db.mirror:
-                line += ",mirror,{}".format(db.mirror)
-            if db.ten_bit:
-                line += ",bitdepth,10"
-
-            lines.append(line)
-            if db.transform != "normal":
-                lines.append("monitor={},transform,{}".format(name, transforms[db.transform]))
-
-            # avoid looking up the hardware name
-            if db.name in outputs_activity and not outputs_activity[db.name]:
-                lines.append("monitor={},disable".format(name))
-
-            cmd = "on" if db.dpms else "off"
-            hyprctl(f"dispatch dpms {cmd} {db.name}")
-
-        print("[Saving]")
-        for line in lines:
-            print(line)
-
-        backup = []
-        if os.path.isfile(outputs_path):
-            backup = load_text_file(outputs_path).splitlines()
-        save_list_to_text_file(lines, outputs_path)
-        create_confirm_win(backup, outputs_path)
-
-def create_confirm_win(backup, path):
+def create_confirm_win(backup, path, config_dir=None, profile_name=None):
     global confirm_win
     if confirm_win:
         confirm_win.destroy()
@@ -983,7 +1021,7 @@ def create_confirm_win(backup, path):
 
     grid.attach(btn_restore, 0, 2, 1, 1)
     btn_keep = Gtk.Button.new_with_label(voc["keep"])
-    btn_keep.connect("clicked", keep_current_settings)
+    btn_keep.connect("clicked", keep_current_settings, config_dir, profile_name)
     grid.attach(btn_keep, 1, 2, 1, 1)
 
     confirm_win.show_all()
@@ -1002,14 +1040,26 @@ def count_down(label, backup, path):
     restore_old_settings(None, backup, path)
 
 
-def keep_current_settings(btn):
+def keep_current_settings(btn, config_dir=None, profile_name=None):
     if src_tag > 0:
         GLib.Source.remove(src_tag)
     confirm_win.close()
 
+    if os.getenv("NIRI_SOCKET"):
+        niri_reload_config()
+        GLib.timeout_add(2000, create_display_buttons)
+
+    if config_dir and profile_name:
+        if config.get("profile-bound-wallpapers", True):
+            threading.Thread(
+                target=WallpaperManager.apply_profile_wallpapers,
+                args=(config_dir, profile_name),
+                daemon=True,
+            ).start()
+
 
 def restore_old_settings(btn, backup, path):
-    print("Restoring old settings...")
+    print("[Settings] Restoring old settings...")
     if src_tag > 0:
         GLib.Source.remove(src_tag)
 
@@ -1025,7 +1075,7 @@ def restore_old_settings(btn, backup, path):
         # remove "{"
         single_line = single_line.replace("{", "")
         # convert multiple spaces into single
-        single_line = ' '.join(single_line.split())
+        single_line = " ".join(single_line.split())
         cmds = single_line.split("}")
         # execute line by line
         i3 = Connection()
@@ -1037,31 +1087,52 @@ def restore_old_settings(btn, backup, path):
         create_display_buttons()
 
     elif os.getenv("HYPRLAND_INSTANCE_SIGNATURE"):
-        save_list_to_text_file(backup, path)
+        # For Hyprland: backup is a tuple (lines_conf, lines_lua), restore both
+        if isinstance(backup, tuple):
+            lua_path = path.removesuffix(".conf") + ".lua" if path.endswith(".conf") else "~/.config/hypr/monitors.lua"
+            save_list_to_text_file(backup[0], path)
+            if backup[1]:
+                save_list_to_text_file(backup[1], lua_path)
+        else:
+            save_list_to_text_file(backup, path)
         confirm_win.close()
         # Don't execute any command here, just save the file and wait for Hyprland to notice and apply the change.
         # Let's give it some time to do it before refreshing UI.
         GLib.timeout_add(2000, create_display_buttons)
 
+    elif os.getenv("NIRI_SOCKET"):
+        # For niri: backup is a file path (.bak), restore by copying it back
+        if backup and os.path.isfile(backup):
+            shutil.copy2(backup, path)
+            print(f"[niri] Restored from {backup}")
+        confirm_win.close()
+        niri_reload_config()
+        GLib.timeout_add(2000, create_display_buttons)
+
 
 def main():
-    GLib.set_prgname('nwg-displays')
+    GLib.set_prgname("nwg-displays")
 
     parser = argparse.ArgumentParser()
 
     if sway:
-        parser.add_argument("-o",
-                            "--outputs_path",
-                            type=str,
-                            default="{}/outputs".format(sway_config_dir),
-                            help="path to save Outputs config to, default: {}".format(
-                                "{}/outputs".format(sway_config_dir)))
+        parser.add_argument(
+            "-o",
+            "--outputs_path",
+            type=str,
+            default="{}/outputs".format(sway_config_dir),
+            help="path to save Outputs config to, default: {}".format(
+                "{}/outputs".format(sway_config_dir)
+            ),
+        )
 
-        parser.add_argument("-n",
-                            "--num_ws",
-                            type=int,
-                            default=8,
-                            help="number of Workspaces in use, default: 8")
+        parser.add_argument(
+            "-n",
+            "--num_ws",
+            type=int,
+            default=8,
+            help="number of Workspaces in use, default: 8",
+        )
 
     elif hypr:
         parser.add_argument("-m",
@@ -1083,6 +1154,24 @@ def main():
                             type=int,
                             default=10,
                             help="number of Workspaces in use, default: 10")
+    elif niri:
+        parser.add_argument(
+            "-m",
+            "--monitors_path",
+            type=str,
+            default="{}/monitor.kdl".format(niri_config_dir),
+            help="path to save the monitor.kdl file to, default: {}".format(
+                "{}/monitor.kdl".format(niri_config_dir)
+            ),
+        )
+
+        parser.add_argument(
+            "-n",
+            "--num_ws",
+            type=int,
+            default=10,
+            help="number of Workspaces in use, default: 10",
+        )
 
     parser.add_argument("-v",
                         "--version",
@@ -1099,8 +1188,8 @@ def main():
     args = parser.parse_args()
 
     if args.daemon:
-        if sway:
-            eprint("ERROR: Daemon mode is not supported for sway yet. Only Hyprland is supported.")
+        if not hypr:
+            eprint("ERROR: Daemon mode is only supported on Hyprland.")
             sys.exit(1)
         from nwg_displays.daemon import MonitorDaemon
         eprint(f"Starting daemon mode with {args.daemon_interval}s interval")
@@ -1124,6 +1213,7 @@ def main():
     elif hypr:
         if os.path.isdir(hypr_config_dir):
             outputs_path = args.monitors_path
+            # 97, 115
             if os.path.lexists(outputs_path):
                 is_writable = os.access(outputs_path, os.W_OK)
                 if os.path.islink(outputs_path) and not is_writable:
@@ -1148,28 +1238,60 @@ def main():
                         os.chmod(outputs_path, os.stat(outputs_path).st_mode | stat.S_IWUSR)
                     except Exception as e:
                         eprint(f"ERROR: Failed to make file writable: {e}")
+
             workspaces_path = args.workspaces_path
         else:
             eprint("Hyprland config directory not found!")
             outputs_path = ""
             workspaces_path = ""
+    elif niri:
+        if os.path.isdir(niri_config_dir):
+            outputs_path = args.monitors_path
+            # Check if file is writable
+            if os.path.lexists(outputs_path):
+                is_writable = os.access(outputs_path, os.W_OK)
+                if os.path.islink(outputs_path) and not is_writable:
+                    eprint(f"INFO: '{outputs_path}' is a read-only symlink. Replacing with a writable file.")
+                    tmp_path = f"{outputs_path}.tmp"
+                    try:
+                        with open(outputs_path, 'r') as src_file, open(tmp_path, 'w') as tmp_file:
+                            tmp_file.write(src_file.read())
+                        backup_path = f"{outputs_path}.bkp"
+                        counter = 1
+                        while os.path.lexists(backup_path):
+                            backup_path = f"{outputs_path}.bkp{counter}"
+                            counter += 1
+                        eprint(f"INFO: Backing up '{outputs_path}' to '{backup_path}'")
+                        os.rename(outputs_path, backup_path)
+                        os.rename(tmp_path, outputs_path)
+                    except Exception as e:
+                        eprint(f"ERROR: Failed to replace read-only symlink: {e}")
+                elif not os.path.islink(outputs_path) and not is_writable:
+                    eprint(f"INFO: '{outputs_path}' is a read-only file. Making it writable.")
+                    try:
+                        os.chmod(outputs_path, os.stat(outputs_path).st_mode | stat.S_IWUSR)
+                    except Exception as e:
+                        eprint(f"ERROR: Failed to make file writable: {e}")
+        else:
+            eprint("niri config directory not found!")
+            outputs_path = ""
 
     global num_ws
     num_ws = args.num_ws
     if sway:
-        print("Number of workspaces: {}".format(num_ws))
+        print("[Info] Number of workspaces: {}".format(num_ws))
 
     config_file = os.path.join(config_dir, "config")
     global config
     if not os.path.isfile(config_file):
         # migrate old config file, if not yet migrated
         if os.path.isfile(os.path.join(old_config_dir, "config")):
-            print("Migrating config to the proper path...")
+            print("[Config] Migrating config to the proper path...")
             os.rename(old_config_dir, config_dir)
         else:
             if not os.path.isdir(config_dir):
                 os.makedirs(config_dir, exist_ok=True)
-            print("'{}' file not found, creating default".format(config_file))
+            print("[Config] '{}' file not found, creating default".format(config_file))
             save_json(config, config_file)
     else:
         config = load_json(config_file)
@@ -1177,7 +1299,13 @@ def main():
     if config_keys_missing(config, config_file):
         config = load_json(config_file)
 
-    eprint("Settings: {}".format(config))
+    if "profile-bound-wallpapers" not in config:
+        config["profile-bound-wallpapers"] = True
+        save_json(config, config_file)
+
+    # Initialize the profile manager
+    global profile_manager
+    profile_manager = ProfileManager(config_dir, config, voc)
 
     global snap_threshold_scaled
     snap_threshold_scaled = config["snap-threshold"]
@@ -1189,16 +1317,21 @@ def main():
     screen = Gdk.Screen.get_default()
     provider = Gtk.CssProvider()
     style_context = Gtk.StyleContext()
-    style_context.add_provider_for_screen(screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    style_context.add_provider_for_screen(
+        screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+    )
     try:
         file = os.path.join(dir_name, "resources/style.css")
         provider.load_from_path(file)
     except:
-        sys.stderr.write("ERROR: {} file not found, using GTK styling\n".format(os.path.join(dir_name,
-                                                                                             "resources/style.css")))
+        sys.stderr.write(
+            "ERROR: {} file not found, using GTK styling\n".format(
+                os.path.join(dir_name, "resources/style.css")
+            )
+        )
 
     window.connect("key-release-event", handle_keyboard)
-    window.connect('destroy', Gtk.main_quit)
+    window.connect("destroy", Gtk.main_quit)
 
     builder.get_object("lbl-modes").set_label("{}:".format(voc["modes"]))
     builder.get_object("lbl-position-x").set_label("{}:".format(voc["position-x"]))
@@ -1246,37 +1379,49 @@ def main():
     global form_view_scale
     form_view_scale = builder.get_object("view-scale")
     form_view_scale.set_tooltip_text(voc["view-scale-tooltip"])
-    adj = Gtk.Adjustment(lower=0.1, upper=0.6, step_increment=0.05, page_increment=0.1, page_size=0.1)
+    adj = Gtk.Adjustment(
+        lower=0.1, upper=0.6, step_increment=0.05, page_increment=0.1, page_size=0.1
+    )
     form_view_scale.configure(adj, 1, 2)
     form_view_scale.connect("changed", on_view_scale_changed)
 
     global form_x
     form_x = builder.get_object("x")
-    adj = Gtk.Adjustment(lower=0, upper=60000, step_increment=1, page_increment=10, page_size=1)
+    adj = Gtk.Adjustment(
+        lower=0, upper=60000, step_increment=1, page_increment=10, page_size=1
+    )
     form_x.configure(adj, 1, 0)
     form_x.connect("value-changed", on_pos_x_changed)
 
     global form_y
     form_y = builder.get_object("y")
-    adj = Gtk.Adjustment(lower=0, upper=40000, step_increment=1, page_increment=10, page_size=1)
+    adj = Gtk.Adjustment(
+        lower=0, upper=40000, step_increment=1, page_increment=10, page_size=1
+    )
     form_y.configure(adj, 1, 0)
     form_y.connect("value-changed", on_pos_y_changed)
 
     global form_width
     form_width = builder.get_object("width")
-    adj = Gtk.Adjustment(lower=0, upper=7680, step_increment=1, page_increment=10, page_size=1)
+    adj = Gtk.Adjustment(
+        lower=0, upper=7680, step_increment=1, page_increment=10, page_size=1
+    )
     form_width.configure(adj, 1, 0)
     form_width.connect("value-changed", on_width_changed)
 
     global form_height
     form_height = builder.get_object("height")
-    adj = Gtk.Adjustment(lower=0, upper=4320, step_increment=1, page_increment=10, page_size=1)
+    adj = Gtk.Adjustment(
+        lower=0, upper=4320, step_increment=1, page_increment=10, page_size=1
+    )
     form_height.configure(adj, 1, 0)
     form_height.connect("value-changed", on_height_changed)
 
     global form_scale
     form_scale = builder.get_object("scale")
-    adj = Gtk.Adjustment(lower=0.1, upper=10, step_increment=0.1, page_increment=10, page_size=1)
+    adj = Gtk.Adjustment(
+        lower=0.1, upper=10, step_increment=0.1, page_increment=10, page_size=1
+    )
     form_scale.configure(adj, 0.1, 6)
     form_scale.connect("value-changed", on_scale_changed)
 
@@ -1290,12 +1435,15 @@ def main():
 
     global form_refresh
     form_refresh = builder.get_object("refresh")
-    adj = Gtk.Adjustment(lower=1, upper=1200, step_increment=1, page_increment=10, page_size=1)
+    adj = Gtk.Adjustment(
+        lower=1, upper=1200, step_increment=1, page_increment=10, page_size=1
+    )
     form_refresh.configure(adj, 1, 3)
     form_refresh.connect("changed", on_refresh_changed)
 
     global form_modes
     form_modes = builder.get_object("modes")
+    form_modes.set_wrap_width(1)
     form_modes.set_tooltip_text(voc["modes-tooltip"])
     form_modes.connect("changed", on_mode_changed)
 
@@ -1307,6 +1455,7 @@ def main():
 
     global form_transform
     form_transform = builder.get_object("transform")
+    form_transform.set_wrap_width(1)
     form_transform.set_tooltip_text(voc["transform-tooltip"])
     form_transform.connect("changed", on_transform_changed)
 
@@ -1321,6 +1470,10 @@ def main():
         form_workspaces.connect("clicked", create_workspaces_window)
     elif hypr:
         form_workspaces.connect("clicked", create_workspaces_window_hypr)
+    elif niri:
+        # Niri uses dynamic workspaces, no need for workspace assignment
+        form_workspaces.set_sensitive(False)
+        form_workspaces.set_tooltip_text("Niri uses dynamic workspaces")
 
     global form_close
     form_close = builder.get_object("close")
@@ -1331,8 +1484,8 @@ def main():
     global form_apply
     form_apply = builder.get_object("apply")
     form_apply.set_label(voc["apply"])
-    if (sway and sway_config_dir) or (hypr and hypr_config_dir):
-        form_apply.connect("clicked", on_apply_button)
+    if (sway and sway_config_dir) or (hypr and hypr_config_dir) or (niri and niri_config_dir):
+        form_apply.connect("clicked", on_apply_button, profile_manager)
     else:
         form_apply.set_sensitive(False)
         form_apply.set_tooltip_text("Config dir not found")
@@ -1369,7 +1522,7 @@ def main():
     else:
         btn.destroy()
 
-    if hypr:
+    if hypr or niri:
         grid = builder.get_object("grid")
 
         global form_ten_bit
@@ -1384,6 +1537,7 @@ def main():
 
         global form_mirror
         form_mirror = Gtk.ComboBoxText()
+        form_mirror.set_wrap_width(1)
         form_mirror.connect("changed", on_mirror_selected)
         grid.attach(form_mirror, 7, 4, 1, 1)
 
@@ -1398,9 +1552,73 @@ def main():
         
     
     # Check daemon status on startup
-    if config.get("daemon-enabled", False) and not is_daemon_running():
+    if hypr and config.get("daemon-enabled", False) and not is_daemon_running():
         eprint("Daemon should be running but isn't - starting it")
         start_daemon()
+    # Add profile management buttons
+    separator = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+    form_wrapper_box.pack_start(separator, False, False, 10)
+
+    profile_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+    form_wrapper_box.pack_start(profile_box, False, False, 0)
+
+    # Add label for current profile name
+    profile_label = Gtk.Label()
+    profile_label.set_text(
+        voc.get("current-profile", "Profile") + ": " + voc.get("none", "None")
+    )
+    profile_label.set_property("margin-end", 10)
+    profile_label.set_property("margin-start", 5)
+    profile_box.pack_start(profile_label, False, False, 0)
+
+    btn_new_profile = Gtk.Button.new_with_label(voc.get("new", "New"))
+    btn_new_profile.set_tooltip_text(
+        voc.get("new-profile-tooltip", "Create a new profile")
+    )
+    btn_new_profile.connect("clicked", profile_manager.create_profile)
+    profile_box.pack_start(btn_new_profile, False, False, 0)
+
+    btn_select_profile = Gtk.Button.new_with_label(voc.get("select", "Select"))
+    btn_select_profile.set_tooltip_text(
+        voc.get("select-profile-tooltip", "Select a profile")
+    )
+    btn_select_profile.connect("clicked", profile_manager.select_profile)
+    profile_box.pack_start(btn_select_profile, False, False, 0)
+
+    btn_save_profile = Gtk.Button.new_with_label(voc.get("save", "Save"))
+    btn_save_profile.set_tooltip_text(
+        voc.get("save-profile-tooltip", "Save to current profile")
+    )
+    btn_save_profile.connect("clicked", profile_manager.save_profile)
+    btn_save_profile.set_sensitive(
+        False
+    )  # Initially disabled until a profile is selected
+    profile_box.pack_start(btn_save_profile, False, False, 0)
+
+    global form_profile_wallpapers
+    form_profile_wallpapers = Gtk.CheckButton.new_with_label(
+        voc.get("profile-bound-wallpapers", "Profile-bound wallpapers")
+    )
+    form_profile_wallpapers.set_tooltip_text(
+        voc.get(
+            "profile-bound-wallpapers-tooltip",
+            "Save and load wallpapers together with display profiles",
+        )
+    )
+    form_profile_wallpapers.set_active(config.get("profile-bound-wallpapers", True))
+    form_profile_wallpapers.connect("toggled", on_profile_wallpapers_toggled)
+    form_wrapper_box.pack_start(form_profile_wallpapers, False, False, 6)
+
+    # Register the save button with the profile manager
+    profile_manager.set_save_button(btn_save_profile)
+
+    # Register the profile label with the profile manager
+    profile_manager.set_profile_label(profile_label)
+
+    # Also pass display_buttons and other required data to profile manager
+    profile_manager.set_display_buttons(display_buttons)
+    profile_manager.set_fixed(fixed)
+    profile_manager.set_update_callback(update_form_from_widget)
 
     if display_buttons:
         update_form_from_widget(display_buttons[0])
@@ -1409,7 +1627,9 @@ def main():
     screen = Gdk.Screen.get_default()
     provider = Gtk.CssProvider()
     style_context = Gtk.StyleContext()
-    style_context.add_provider_for_screen(screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    style_context.add_provider_for_screen(
+        screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+    )
     css = b""" #popup { border-radius: 6px; border: solid 1px; border-color: #f00 } """
     provider.load_from_data(css)
 
@@ -1422,5 +1642,5 @@ def main():
     Gtk.main()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

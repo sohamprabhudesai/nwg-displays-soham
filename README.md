@@ -3,14 +3,14 @@
 
 This application is a part of the [nwg-shell](https://nwg-piotr.github.io/nwg-shell) project.
 
-**Nwg-displays** is an output management utility for [sway](https://github.com/swaywm/sway) and [Hyprland](https://github.com/hyprwm/Hyprland) 
+**Nwg-displays** is an output management utility for [sway](https://github.com/swaywm/sway), [Hyprland](https://github.com/hyprwm/Hyprland) and [Niri](https://github.com/niri-wm/niri)
 Wayland compositor, inspired by wdisplays and wlay. The program is expected to:
 
 - provide an intuitive GUI to manage multiple displays;
 - apply settings;
 - save outputs configuration to a text file;
 - save workspace -> output assignments to a text file;
-- support sway and Hyprland only.
+- support sway, Hyprland and Niri only.
 
 <img src="https://user-images.githubusercontent.com/20579136/158013748-5b27f742-0e6a-4d82-a5ac-06368b4df008.png" width=640, alt="screenshot"><br>
 
@@ -86,7 +86,7 @@ Use `--num_ws` if you use workspaces in a number other than 8.
 
 ### Hyprland
 
-[Monitors](https://wiki.hyprland.org/Configuring/Monitors):
+[Monitors](https://wiki.hyprland.org/0.54.0/Configuring/Monitors):
 
 Instead of configuring as described in Wiki, insert this line:
 
@@ -94,7 +94,12 @@ Instead of configuring as described in Wiki, insert this line:
 source = ~/.config/hypr/monitors.conf
 ```
 
-[Default workspace](http://wiki.hyprland.org/Configuring/Monitors/#default-workspace) and [Binding workspaces to a monitor](https://wiki.hyprland.org/Configuring/Monitors/#binding-workspaces-to-a-monitor):
+For version 0.55 and greater (using Lua), insert this line:
+```lua
+require("monitors")
+```
+
+[Default workspace](http://wiki.hyprland.org/0.54.0/Configuring/Monitors/#default-workspace) and [Binding workspaces to a monitor](https://wiki.hyprland.org/0.54.0/Configuring/Monitors/#binding-workspaces-to-a-monitor):
 
 Insert:
 
@@ -102,11 +107,32 @@ Insert:
 source = ~/.config/hypr/workspaces.conf
 ```
 
-Do not set `disable_autoreload true` in Hyprland settings, or you'll have to reload Hyprland manually after applying chages.
+For version 0.55 and greater, insert:
+```lua
+require("workspaces")
+```
+
+Do not set `disable_autoreload true` in Hyprland settings, or you'll have to reload Hyprland manually after applying changes.
+
+### Niri
+
+[Outputs](https://niri-wm.github.io/niri/Configuration:-Outputs.html):
+
+The program automatically adds an include directive to your `~/.config/niri/config.kdl` file:
+
+```kdl
+include "monitor.kdl"
+```
+
+The configuration is saved to `~/.config/niri/monitor.kdl` in KDL format:
+
+Niri will automatically reload the configuration when you apply settings in nwg-displays.
+
+**Note:** Niri uses dynamic workspaces, so the workspace assignment feature is not available for Niri.
 
 ## Settings
 
-The runtime configuration file is placed in your config directory, like `~/.config/nwg-displays/config`. 
+The runtime configuration file is placed in your config directory, like `~/.config/nwg-displays/config`.
 It's a simple JSON file:
 
 ```json

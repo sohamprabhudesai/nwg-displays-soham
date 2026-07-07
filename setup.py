@@ -8,19 +8,17 @@ def read(f_name):
 
 
 setup(
-    name='nwg-displays',
-    version='0.3.26',
-    description='nwg-shell output configuration utility',
+    name="nwg-displays",
+    version="0.4.3",
+    description="nwg-shell output configuration utility",
     packages=find_packages(),
     include_package_data=True,
-    package_data={
-        "": ["resources/*", "langs/*"]
-    },
-    url='https://github.com/nwg-piotr/nwg-displays',
-    license='MIT',
-    author='Piotr Miller',
-    author_email='nwg.piotr@gmail.com',
-    python_requires='>=3.6.0',
+    package_data={"": ["resources/*", "langs/*", "scripts/*", "settings_applier/*", "wallpaper_manager/*"]},
+    url="https://github.com/nwg-piotr/nwg-displays",
+    license="MIT",
+    author="Piotr Miller",
+    author_email="nwg.piotr@gmail.com",
+    python_requires=">=3.6.0",
     install_requires=[],
     entry_points={
         'gui_scripts': [
@@ -28,6 +26,8 @@ setup(
         ],
         'console_scripts':[
             'nwg-displays-daemon = nwg_displays.daemon:main',
+            "nwg-displays-apply = nwg_displays.scripts.apply_profile_json:main",
+            "nwg-displays-toggle-wallpapers = nwg_displays.scripts.toggle_profile_wallpapers:main",
         ]
     }
 )
